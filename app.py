@@ -279,7 +279,9 @@ else:
 
 
         df = pd.read_csv(
-            uploaded_file
+            uploaded_file,
+            sep=None,
+            engine="python"
         )
 
 
