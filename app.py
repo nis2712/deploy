@@ -1,257 +1,369 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+
+from gensim import models
+from gensim.corpora import Dictionary
 
 
-# =====================================================
-# KONFIGURASI HALAMAN
-# =====================================================
+# ==================================================
+# KONFIGURASI
+# ==================================================
 
 st.set_page_config(
-    page_title="BPJS Critical Issue Insight Dashboard",
+    page_title="BPJS Critical Issue Detector",
     page_icon="🏥",
     layout="wide"
 )
 
 
-# =====================================================
-# JUDUL DASHBOARD
-# =====================================================
+# ==================================================
+# LOAD MODEL LDA
+# ==================================================
 
-st.title("🏥 BPJS Critical Issue Insight Dashboard")
+@st.cache_resource
+def load_model():
 
-st.markdown(
-    """
-    Dashboard ini menampilkan hasil identifikasi isu kritis
-    layanan BPJS Kesehatan berdasarkan pemodelan topik
-    Latent Dirichlet Allocation (LDA) pada data cuitan
-    bersentimen negatif di media sosial X.
-    """
-)
+    lda_model = models.LdaModel.load(
+        "deployment/lda_model.model"
+    )
 
+    dictionary = Dictionary.load(
+        "deployment/dictionary.dict"
+    )
 
-# =====================================================
-# LOAD DATA HASIL LDA
-# =====================================================
+    return lda_model, dictionary
+
 
 @st.cache_data
-def load_data():
+def load_label():
 
-    df_topik = pd.read_csv(
-        "deployment/hasil_topik.csv"
+    df = pd.read_csv(
+        "deployment/label_topik.csv"
     )
 
-    df_keyword = pd.read_csv(
-        "deployment/kata_dominan.csv"
+    return df
+
+
+
+lda_model, dictionary = load_model()
+
+label_topik = load_label()
+
+
+
+# ==================================================
+# PREPROCESS SEDERHANA
+# ==================================================
+
+def preprocess(text):
+
+    text = text.lower()
+
+    # hapus karakter sederhana
+    text = (
+        text
+        .replace(".", " ")
+        .replace(",", " ")
+        .replace("!", " ")
+        .replace("?", " ")
     )
 
-    df_tweet = pd.read_csv(
-        "deployment/contoh_tweet.csv"
-    )
+    tokens = text.split()
 
-    return df_topik, df_keyword, df_tweet
-
-
-df_topik, df_keyword, df_tweet = load_data()
+    return tokens
 
 
 
-# =====================================================
-# INFORMASI DATASET
-# =====================================================
+# ==================================================
+# FUNGSI PREDIKSI TOPIK
+# ==================================================
 
-st.subheader("📊 Informasi Dataset")
+def predict_topic(text):
 
-
-col1, col2, col3 = st.columns(3)
-
-
-with col1:
-    st.metric(
-        "Jumlah Data Analisis LDA",
-        len(df_topik)
-    )
+    tokens = preprocess(text)
 
 
-with col2:
-    st.metric(
-        "Jumlah Topik Optimal",
-        df_topik["Topik"].nunique()
-    )
-
-
-with col3:
-    st.metric(
-        "Metode",
-        "LDA"
-    )
-
-
-
-# =====================================================
-# DISTRIBUSI TOPIK
-# =====================================================
-
-st.divider()
-
-st.subheader(
-    "📌 Distribusi Isu Kritis"
-)
-
-
-jumlah_topik = (
-    df_topik["Topik"]
-    .value_counts()
-    .reset_index()
-)
-
-
-jumlah_topik.columns = [
-    "Topik",
-    "Jumlah Cuitan"
-]
-
-
-jumlah_topik = jumlah_topik.sort_values(
-    "Topik"
-)
-
-
-fig = px.bar(
-    jumlah_topik,
-    x="Topik",
-    y="Jumlah Cuitan",
-    text="Jumlah Cuitan",
-    title="Distribusi Jumlah Cuitan Setiap Topik"
-)
-
-
-st.plotly_chart(
-    fig,
-    use_container_width=True
-)
-
-
-
-# =====================================================
-# IDENTIFIKASI ISU KRITIS
-# =====================================================
-
-st.divider()
-
-st.subheader(
-    "🔎 Identifikasi Isu Kritis"
-)
-
-
-pilihan_topik = st.selectbox(
-    "Pilih Topik",
-    sorted(
-        df_keyword["Topik"].unique()
-    )
-)
-
-
-
-# mengambil kata dominan
-
-detail_topik = df_keyword[
-    df_keyword["Topik"]
-    ==
-    pilihan_topik
-]
-
-
-if len(detail_topik) > 0:
-
-    st.markdown(
-        "### Kata Dominan"
-    )
-
-    st.info(
-        detail_topik.iloc[0]
-        ["Kata Dominan"]
+    bow = dictionary.doc2bow(
+        tokens
     )
 
 
-
-# =====================================================
-# CONTOH CUITAN
-# =====================================================
-
-st.markdown(
-    "### Contoh Cuitan"
-)
-
-
-# mengambil nomor topik
-
-nomor_topik = int(
-    pilihan_topik
-    .replace(
-        "Topik ",
-        ""
-    )
-)
-
-
-
-contoh = df_tweet[
-    df_tweet["Topik"]
-    ==
-    nomor_topik
-]
-
-
-
-if len(contoh) > 0:
-
-    for tweet in contoh.iloc[:, 1]:
-
-        st.write(
-            "•",
-            tweet
+    topic_distribution = (
+        lda_model
+        .get_document_topics(
+            bow
         )
+    )
+
+
+    if len(topic_distribution)==0:
+
+        return None
+
+
+    dominant_topic = max(
+        topic_distribution,
+        key=lambda x:x[1]
+    )
+
+
+    topic_id = (
+        dominant_topic[0]
+        + 1
+    )
+
+
+    probability = (
+        dominant_topic[1]
+        *100
+    )
+
+
+    return topic_id, probability
+
+
+
+# ==================================================
+# HEADER
+# ==================================================
+
+st.title(
+    "🏥 BPJS Critical Issue Detector"
+)
+
+
+st.write(
+    """
+    Sistem identifikasi isu kritis layanan BPJS Kesehatan
+    menggunakan pemodelan topik Latent Dirichlet Allocation (LDA).
+    """
+)
+
+
+
+# ==================================================
+# MENU
+# ==================================================
+
+menu = st.radio(
+    "Pilih Mode Analisis",
+    [
+        "Single Text",
+        "Upload CSV"
+    ]
+)
+
+
+
+# ==================================================
+# SINGLE TEXT
+# ==================================================
+
+if menu == "Single Text":
+
+
+    st.subheader(
+        "Analisis Satu Cuitan"
+    )
+
+
+    text_input = st.text_area(
+        "Masukkan teks keluhan:"
+    )
+
+
+    if st.button(
+        "Analisis"
+    ):
+
+
+        if text_input.strip():
+
+
+            result = predict_topic(
+                text_input
+            )
+
+
+            if result:
+
+
+                topic, prob = result
+
+
+                info = label_topik[
+                    label_topik["Topik"]
+                    == topic
+                ]
+
+
+                st.success(
+                    "Analisis berhasil"
+                )
+
+
+                col1,col2 = st.columns(2)
+
+
+                with col1:
+
+                    st.metric(
+                        "Topik",
+                        f"Topik {topic}"
+                    )
+
+
+                with col2:
+
+                    st.metric(
+                        "Probabilitas",
+                        f"{prob:.2f}%"
+                    )
+
+
+                st.subheader(
+                    "Identifikasi Isu Kritis"
+                )
+
+
+                st.info(
+                    info.iloc[0]["Isu Kritis"]
+                )
+
+
+                st.write(
+                    "Kata Dominan:"
+                )
+
+
+                st.write(
+                    info.iloc[0]["Kata Dominan"]
+                )
+
+
+
+            else:
+
+                st.warning(
+                    "Tidak ditemukan topik"
+                )
+
+
+        else:
+
+            st.warning(
+                "Masukkan teks terlebih dahulu"
+            )
+
+
+
+# ==================================================
+# BATCH CSV
+# ==================================================
 
 else:
 
-    st.warning(
-        "Contoh cuitan tidak ditemukan."
+
+    st.subheader(
+        "Analisis Banyak Data"
     )
 
 
-
-# =====================================================
-# TABEL SEMUA TOPIK
-# =====================================================
-
-st.divider()
-
-st.subheader(
-    "📋 Ringkasan Seluruh Topik"
-)
+    uploaded_file = st.file_uploader(
+        "Upload CSV",
+        type=["csv"]
+    )
 
 
-st.dataframe(
-    df_keyword,
-    use_container_width=True
-)
+    if uploaded_file:
+
+
+        df = pd.read_csv(
+            uploaded_file
+        )
+
+
+        st.write(
+            "Preview Data"
+        )
+
+        st.dataframe(
+            df.head()
+        )
+
+
+        kolom = st.selectbox(
+            "Pilih kolom teks",
+            df.columns
+        )
 
 
 
-# =====================================================
-# FOOTER
-# =====================================================
+        if st.button(
+            "Proses CSV"
+        ):
 
-st.divider()
 
-st.caption(
-    """
-    Model:
-    IndoBERTweet hasil continued fine-tuning + 
-    Latent Dirichlet Allocation (LDA)
+            hasil = []
 
-    Sumber data:
-    Media sosial X
-    """
-)
+
+            for text in df[kolom]:
+
+
+                result = predict_topic(
+                    str(text)
+                )
+
+
+                if result:
+
+                    topic, prob = result
+
+
+                    info = label_topik[
+                        label_topik["Topik"]
+                        ==
+                        topic
+                    ]
+
+
+                    hasil.append(
+                        {
+                        "Teks":text,
+                        "Topik":topic,
+                        "Probabilitas":
+                            round(prob,2),
+                        "Isu Kritis":
+                            info.iloc[0]["Isu Kritis"]
+                        }
+                    )
+
+
+
+            df_hasil = pd.DataFrame(
+                hasil
+            )
+
+
+            st.subheader(
+                "Hasil Identifikasi"
+            )
+
+
+            st.dataframe(
+                df_hasil,
+                use_container_width=True
+            )
+
+
+            csv = df_hasil.to_csv(
+                index=False
+            )
+
+
+            st.download_button(
+                "Download Hasil CSV",
+                csv,
+                "hasil_identifikasi_isu.csv",
+                "text/csv"
+            )
